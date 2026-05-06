@@ -7,5 +7,9 @@ Excluded on purpose:
 - `~/Library/Application Support/opencode-telegram-bot/.env`
 - `~/.config/clash.meta/config.yaml`
 - `~/.config/clash.meta/Nexitally_Clash.yaml`
+- `~/tools/lockNontification/tencent-bark-relay/config.env`
 
 Those files contain secrets or provider-specific data and should stay local.
+
+The watchdog script reads the Bark relay config locally if it exists, so the relay stays outside the repo.
+It also evaluates bot health from the latest startup marker, which avoids false alarms from older startup failures after a clean restart.

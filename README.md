@@ -29,6 +29,8 @@ Those files can contain tokens, subscription data, or provider-specific secrets,
 - OpenCode listens on `127.0.0.1:4096`
 - The Telegram bot uses the local HTTP proxy on `127.0.0.1:7890`
 - Current recovery work should continue on a separate branch in a fresh Desktop clone
+- `opencode-telegram` now has a lightweight `/health` command and a periodic watchdog wrapper for local recovery and Bark alerts
+- The watchdog judges health from the latest bot start marker, so it will not treat stale startup failures as a fresh outage after a successful restart
 
 ## Troubleshooting
 
