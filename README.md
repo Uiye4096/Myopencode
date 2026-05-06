@@ -31,6 +31,7 @@ Those files can contain tokens, subscription data, or provider-specific secrets,
 - Current recovery work should continue on a separate branch in a fresh Desktop clone
 - `opencode-telegram` now has a lightweight `/health` command and a periodic watchdog wrapper for local recovery and Bark alerts
 - The watchdog judges health from the latest bot start marker, so it will not treat stale startup failures as a fresh outage after a successful restart
+- Telegram API reachability is now treated as a soft signal; local proxy and OpenCode readiness are the hard gates for automatic recovery
 
 ## Troubleshooting
 

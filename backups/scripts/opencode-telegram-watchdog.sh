@@ -9,9 +9,10 @@ BOT_LABEL="com.uiye2048.opencode-telegram-bot"
 BOT_PLIST="/Users/uiye2048/Library/LaunchAgents/com.uiye2048.opencode-telegram-bot.plist"
 OPENCODE_PLIST="/Users/uiye2048/Library/LaunchAgents/com.uiye2048.opencode-serve.plist"
 BOT_LOG_DIR="/Users/uiye2048/Library/Application Support/opencode-telegram-bot/logs"
+LSOF_BIN="/usr/sbin/lsof"
 LOG="/tmp/opencode-telegram-watchdog.log"
 BOT_RESTART_DELAY_SECONDS=8
-BOT_RECOVERY_TIMEOUT_SECONDS=30
+BOT_RECOVERY_TIMEOUT_SECONDS=60
 BOT_RECOVERY_POLL_SECONDS=2
 
 log() {
@@ -58,7 +59,7 @@ launchagent_running() {
 
 process_alive() {
     local pid="$1"
-    [ -n "$pid" ] && kill -0 "$pid" >/dev/null 2>&1
+    [ -n "$pid" ] && launchctl print "gui/$UID_TOKEN/$BOT_LABEL" 2>/dev/null | grep -q "pid = $pid"
 }
 
 latest_bot_log() {
@@ -74,11 +75,11 @@ telegram_proxy_url() {
 }
 
 probe_opencode() {
-    nc -z 127.0.0.1 4096 >/dev/null 2>&1
+    "$LSOF_BIN" -nP -iTCP:4096 -sTCP:LISTEN >/dev/null 2>&1
 }
 
 probe_proxy() {
-    nc -z 127.0.0.1 7890 >/dev/null 2>&1 || nc -z 127.0.0.1 7891 >/dev/null 2>&1
+    "$LSOF_BIN" -nP -iTCP:7890 -sTCP:LISTEN >/dev/null 2>&1 || "$LSOF_BIN" -nP -iTCP:7891 -sTCP:LISTEN >/dev/null 2>&1
 }
 
 probe_telegram() {
@@ -94,7 +95,16 @@ probe_telegram() {
 }
 
 probe_dependencies() {
-    probe_proxy && probe_opencode && probe_telegram
+    probe_proxy && probe_opencode
+}
+
+probe_telegram_soft() {
+    if probe_telegram >/dev/null 2>&1; then
+        return 0
+    fi
+
+    log "telegram API probe failed; continuing because local proxy and OpenCode are up"
+    return 1
 }
 
 bot_has_recent_failure() {
@@ -113,7 +123,7 @@ bot_has_recent_failure() {
         return 1
     fi
 
-    if tail -n 120 "$log_file" | grep -Eq "CLI error: Network request for 'getWebhookInfo' failed!|Network request for 'sendMessage' failed!|Network request for 'sendChatAction' failed!|Network request for 'editMessageText' failed!"; then
+    if tail -n 120 "$log_file" | grep -Eq "CRITICAL: Stopping event processing due to error"; then
         return 0
     fi
 
@@ -130,7 +140,7 @@ wait_for_bot_recovery() {
     while [ "$elapsed" -lt "$BOT_RECOVERY_TIMEOUT_SECONDS" ]; do
         local pid
         pid="$(launchagent_pid || true)"
-        if [ -n "$pid" ] && process_alive "$pid" && ! bot_has_recent_failure; then
+        if [ -n "$pid" ] && process_alive "$pid"; then
             return 0
         fi
         sleep "$BOT_RECOVERY_POLL_SECONDS"
@@ -164,9 +174,11 @@ main() {
         exit 1
     fi
 
+    probe_telegram_soft || true
+
     local pid
     pid="$(launchagent_pid || true)"
-    if [ -n "$pid" ] && process_alive "$pid" && ! bot_has_recent_failure; then
+    if [ -n "$pid" ] && process_alive "$pid"; then
         log "bot is alive and no recent failure was found; nothing to do"
         exit 0
     fi
