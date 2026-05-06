@@ -35,12 +35,16 @@ Those files can contain tokens, subscription data, or provider-specific secrets,
 
 - OpenCode Telegram would start, but then fail during startup with `getWebhookInfo`
 - ClashX Meta was running as a LaunchAgent, but local proxy ports were not reliably available
+- In the bad startup window on `2026-05-05 17:46` and `17:49`, the bot exited before `bot.start()` completed
 
 ### Root cause
 
 - The active ClashX Meta launch path was not consistently using the Nexitally profile
 - The default `~/.config/clash.meta/config.yaml` had been overwritten by another tool and was not the intended local profile
 - `opencode-telegram` depended on the local proxy being available at `127.0.0.1:7890`
+- The startup path calls `bot.api.getWebhookInfo()` before entering the polling loop, and that request failed with `Network request for 'getWebhookInfo' failed!`
+- The failure was transport-level, not a Telegram business error: `setMyCommands` also failed first, and Clash logs showed Telegram-bound traffic hitting DNS resolution failures in the proxy chain
+- This points to a temporary Telegram/proxy connectivity problem during startup, not an account change or a broken `/status` handler
 
 ### Fix
 
@@ -57,3 +61,10 @@ Those files can contain tokens, subscription data, or provider-specific secrets,
 
 - Manual reopening of ClashX Meta is fine as long as it stays on the Nexitally profile and keeps `7890/7891/9090` available
 - If Telegram fails again, first check that ClashX Meta is actually exposing `7890` before touching the bot
+- Later restarts succeeded once ClashX Meta was healthy again:
+  - `2026-05-05 17:59:59` bot started successfully
+  - `2026-05-06 01:43:07` bot started successfully again after a later reboot
+- For future incidents, check these in order:
+  - ClashX Meta log for Telegram DNS / connect errors
+  - `opencode-telegram` startup log for `setMyCommands` and `getWebhookInfo`
+  - `launchctl print` to confirm the bot job is really alive, not just marked running
