@@ -28,6 +28,7 @@ Those files can contain tokens, subscription data, or provider-specific secrets,
 - The active local setup uses ClashX Meta with the Nexitally profile
 - OpenCode listens on `127.0.0.1:4096`
 - The Telegram bot uses the local HTTP proxy on `127.0.0.1:7890`
+- Current recovery work should continue on a separate branch in a fresh Desktop clone
 
 ## Troubleshooting
 
