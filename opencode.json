@@ -1,9 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "model": "deepseek/deepseek-v4-pro",
-  "instructions": [
-    "./prompts/global-rules.md"
-  ],
   "small_model": "deepseek/deepseek-v4-flash",
   "agent": {
     "build": {
