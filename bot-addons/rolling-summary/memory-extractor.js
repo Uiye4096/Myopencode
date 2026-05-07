@@ -1,6 +1,5 @@
 "use strict";
 
-const { generateSummary } = require("./generator.js");
 const config = require("../config.js");
 
 const EXTRACTION_SYSTEM_PROMPT = `你是记忆策展人。你为一个角色扮演 AI 角色处理长期记忆。你的工作不是罗列事实，而是——把对话中那些如果发生在人类身上，很多年后某个瞬间依然会突然浮现的东西，写成一段段"记忆的印记"。
@@ -37,14 +36,6 @@ async function extractMemories(summary, previousMemories) {
     return { memories: previousMemories || "", hasNew: false };
   }
 
-  const userPrompt = previousMemories
-    ? `## 旧记忆（保持不变，新记忆追加在后面）\n${previousMemories}\n\n## 当前对话摘要\n${summary}\n\n请基于摘要提取新的记忆印记，追加在旧记忆后面输出。`
-    : `## 当前对话摘要\n${summary}\n\n请从中提取值得成为记忆印记的瞬间。`;
-
-  const result = await generateSummary(null, userPrompt);
-  // override the system prompt for extraction
-  // We re-use the generateSummary infra but need to swap the prompt
-  // Let's make a direct API call instead
   return directExtraction(summary, previousMemories);
 }
 
@@ -64,7 +55,7 @@ async function directExtraction(summary, previousMemories) {
       { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
       { role: "user", content: userPrompt },
     ],
-    max_tokens: 1024,
+    max_tokens: config.SUMMARY_MAX_TOKENS,
     temperature: 0.5,
   });
 
@@ -82,13 +73,24 @@ async function directExtraction(summary, previousMemories) {
       },
       timeout: 30000,
     }, (res) => {
-      let data = "";
-      res.on("data", (chunk) => (data += chunk));
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
       res.on("end", () => {
+        const data = Buffer.concat(chunks).toString("utf8");
+        if (res.statusCode && res.statusCode >= 400) {
+          reject(new Error(`DeepSeek API error ${res.statusCode}: ${data.slice(0, 300)}`));
+          return;
+        }
         try {
           const result = JSON.parse(data);
-          const content = result.choices && result.choices[0] && result.choices[0].message
-            ? result.choices[0].message.content
+          const choice = result.choices && result.choices[0];
+          const finishReason = choice && choice.finish_reason;
+          if (finishReason && finishReason !== "stop") {
+            reject(new Error(`DeepSeek API returned finish_reason=${finishReason}; memory not saved`));
+            return;
+          }
+          const content = choice && choice.message
+            ? choice.message.content
             : "";
           const cleaned = content.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
 

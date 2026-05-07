@@ -24,6 +24,11 @@ function parseEnv(filePath) {
 
 const env = parseEnv(ENV_FILE);
 
+function positiveInt(value, fallback) {
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 module.exports = {
   APP_HOME,
   ENV_FILE,
@@ -32,11 +37,12 @@ module.exports = {
   DEEPSEEK_API_URL: "https://api.deepseek.com",
 
   ROLLING_SUMMARY_ENABLED: env.ROLLING_SUMMARY_ENABLED !== "false",
-  ROLLING_SUMMARY_ROUNDS: parseInt(env.ROLLING_SUMMARY_ROUNDS || "10", 10) || 10,
+  ROLLING_SUMMARY_ROUNDS: positiveInt(env.ROLLING_SUMMARY_ROUNDS || "10", 10),
   ROLLING_SUMMARY_MODEL: env.ROLLING_SUMMARY_MODEL || "deepseek-chat",
 
   MAX_DIFF_TOKENS: 40000,
   SUMMARY_MAX_CHARS: 800,
+  SUMMARY_MAX_TOKENS: positiveInt(env.SUMMARY_MAX_TOKENS || "4096", 4096),
 
   REGENERATION_VERSION: 5,
   REGENERATION_ROUNDS: 20,
@@ -44,5 +50,5 @@ module.exports = {
   MAX_RETRIES: 3,
   RETRY_BACKOFF_MS: [1000, 2000, 4000],
 
-  INACTIVITY_MINUTES: parseInt(env.ROLLING_SUMMARY_INACTIVITY_MINUTES || "30", 10) || 30,
+  INACTIVITY_MINUTES: positiveInt(env.ROLLING_SUMMARY_INACTIVITY_MINUTES || "30", 30),
 };

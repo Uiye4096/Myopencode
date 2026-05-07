@@ -69,15 +69,21 @@ async function generateSummary(previousSummary, newMessages) {
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
       ],
-      max_tokens: 1024,
+      max_tokens: config.SUMMARY_MAX_TOKENS,
       temperature: 0.3,
     });
 
     const response = await deepseekRequest("/chat/completions", body);
     const data = JSON.parse(response);
-    const content = data.choices && data.choices[0] && data.choices[0].message
-      ? data.choices[0].message.content
+    const choice = data.choices && data.choices[0];
+    const finishReason = choice && choice.finish_reason;
+    const content = choice && choice.message
+      ? choice.message.content
       : "";
+
+    if (finishReason && finishReason !== "stop") {
+      throw new Error(`DeepSeek API returned finish_reason=${finishReason}; summary not saved`);
+    }
 
     if (!content) {
       let preview = "";
@@ -113,9 +119,10 @@ function deepseekRequest(path, body) {
     };
 
     const req = https.request(options, (res) => {
-      let data = "";
-      res.on("data", (chunk) => (data += chunk));
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
       res.on("end", () => {
+        const data = Buffer.concat(chunks).toString("utf8");
         if (res.statusCode && res.statusCode >= 400) {
           reject(new Error(`DeepSeek API error ${res.statusCode}: ${data.slice(0, 300)}`));
           return;

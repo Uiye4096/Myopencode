@@ -26,9 +26,10 @@ function fetchMessages(sessionId, limit) {
     const client = http;
 
   client.get(url, (res) => {
-    let data = "";
-    res.on("data", (chunk) => (data += chunk));
+    const chunks = [];
+    res.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     res.on("end", () => {
+      const data = Buffer.concat(chunks).toString("utf8");
       if (res.statusCode >= 400) {
         reject(new Error(`OpenCode API error ${res.statusCode}: ${data.slice(0, 300)}`));
         return;
