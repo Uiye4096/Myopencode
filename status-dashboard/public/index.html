@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>OpenCode Telegram Ops</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">Local Operations Console</p>
+          <h1 id="page-title">OpenCode Telegram Dashboard</h1>
+        </div>
+        <div class="header-controls">
+          <div class="health-pill" id="overall-health" data-state="unknown">
+            <span class="pulse" aria-hidden="true"></span>
+            <span id="overall-health-label">Checking</span>
+          </div>
+          <div class="refresh-meta">
+            <span>Last refreshed</span>
+            <strong id="last-refreshed">Never</strong>
+          </div>
+          <label class="toggle">
+            <input id="auto-refresh" type="checkbox" checked>
+            <span>Auto refresh</span>
+          </label>
+          <button class="button primary" id="manual-refresh" type="button">Refresh</button>
+        </div>
+      </header>
+
+      <main>
+        <section class="status-strip" aria-label="System status cards">
+          <article class="status-card" data-card="telegramBot"></article>
+          <article class="status-card" data-card="opencode"></article>
+          <article class="status-card" data-card="watchdog"></article>
+          <article class="status-card" data-card="clash"></article>
+          <article class="status-card" data-card="telegramApi"></article>
+          <article class="status-card" data-card="rollingMemory"></article>
+        </section>
+
+        <div class="dashboard-grid">
+          <section class="panel operations-panel" aria-labelledby="operations-title">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Controlled Actions</p>
+                <h2 id="operations-title">Operations</h2>
+              </div>
+              <span class="panel-note">Confirm before execution</span>
+            </div>
+
+            <div class="action-list">
+              <article class="action-card">
+                <div>
+                  <h3>Restart Telegram bot</h3>
+                  <p>LaunchAgent kickstart</p>
+                </div>
+                <button class="button danger" data-action="botRestart" type="button">Restart</button>
+              </article>
+              <article class="action-card">
+                <div>
+                  <h3>Restart OpenCode serve</h3>
+                  <p>Local serve restart</p>
+                </div>
+                <button class="button danger" data-action="opencodeRestart" type="button">Restart</button>
+              </article>
+              <article class="action-card">
+                <div>
+                  <h3>Run watchdog</h3>
+                  <p>Watchdog probe</p>
+                </div>
+                <button class="button" data-action="watchdogRun" type="button">Run now</button>
+              </article>
+            </div>
+
+            <div class="activity">
+              <div class="activity-head">
+                <h3>Activity history</h3>
+                <button class="button ghost" id="clear-activity" type="button">Clear</button>
+              </div>
+              <ol id="activity-list" class="activity-list" aria-live="polite"></ol>
+            </div>
+          </section>
+
+          <section class="panel memory-panel" aria-labelledby="memory-title">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Long-Term Memory Metadata</p>
+                <h2 id="memory-title">Rolling Memory</h2>
+              </div>
+              <span id="memory-count" class="panel-note">No sessions</span>
+            </div>
+            <div id="memory-state" class="empty-state">Waiting for status data.</div>
+            <div id="memory-list" class="memory-list"></div>
+          </section>
+        </div>
+
+        <section class="panel logs-panel" aria-labelledby="logs-title">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Redacted Backend Output</p>
+              <h2 id="logs-title">Logs</h2>
+            </div>
+            <div class="log-controls">
+              <label>
+                <span>Filter</span>
+                <select id="log-filter">
+                  <option value="all">All</option>
+                  <option value="error">Error</option>
+                  <option value="warn">Warn</option>
+                  <option value="info">Info</option>
+                  <option value="rolling-summary">Rolling summary</option>
+                </select>
+              </label>
+              <button class="button" id="refresh-logs" type="button">Refresh logs</button>
+            </div>
+          </div>
+          <div class="log-tabs" role="tablist" aria-label="Log sources">
+            <button class="tab active" data-log="bot" type="button" role="tab" aria-selected="true">Bot</button>
+            <button class="tab" data-log="dailyBot" type="button" role="tab" aria-selected="false">Daily Bot</button>
+            <button class="tab" data-log="watchdog" type="button" role="tab" aria-selected="false">Watchdog</button>
+            <button class="tab" data-log="startup" type="button" role="tab" aria-selected="false">Startup</button>
+            <button class="tab" data-log="opencode" type="button" role="tab" aria-selected="false">OpenCode</button>
+            <button class="tab" data-log="clash" type="button" role="tab" aria-selected="false">Clash</button>
+          </div>
+          <div id="log-status" class="log-status">Select a log source.</div>
+          <pre id="log-output" class="log-output" tabindex="0" aria-live="polite"></pre>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="confirm-dialog" class="confirm-dialog">
+      <form method="dialog">
+        <p class="eyebrow">Confirmation Required</p>
+        <h2 id="confirm-title">Confirm action</h2>
+        <p id="confirm-message"></p>
+        <div class="dialog-actions">
+          <button class="button ghost" value="cancel" type="submit">Cancel</button>
+          <button class="button danger" id="confirm-submit" value="confirm" type="submit">Confirm</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="memory-dialog" class="memory-dialog">
+      <form method="dialog">
+        <div class="memory-dialog-head">
+          <div>
+            <p class="eyebrow">Full Memory</p>
+            <h2 id="memory-dialog-title">Memory</h2>
+            <p id="memory-dialog-meta"></p>
+          </div>
+          <button class="button ghost" value="cancel" type="submit">Close</button>
+        </div>
+        <pre id="memory-dialog-content" class="memory-dialog-content"></pre>
+      </form>
+    </dialog>
+
+    <script src="./app.js" defer></script>
+  </body>
+</html>

@@ -106,10 +106,6 @@ const INDEX_INJECTION = `
                   const rounds = parseInt(process.env.ROLLING_SUMMARY_ROUNDS || "10", 10);
                   if (entry.roundCount > 0 && entry.roundCount % rounds === 0 && !entry.isSummarizing && !entry.summaryDisabled) {
                     logger.info(\`[Bot] Triggering summary cycle for \${sid} at round \${entry.roundCount}\`);
-                    entry.isSummarizing = true;
-                    state[sid] = entry;
-                    writeFileSync(stateTmp, JSON.stringify(state, null, 2), "utf-8");
-                    renameSync(stateTmp, statePath);
                     const addonDir = join(homedir(), "Library/Application Support/opencode-telegram-bot/addons");
                     const runnerPath = join(addonDir, "rolling-summary/cycle-runner.js");
                     const child = spawn(process.execPath, [runnerPath, sid], {
