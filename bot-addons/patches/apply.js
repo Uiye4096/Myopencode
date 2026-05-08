@@ -11,11 +11,13 @@ const BOT_DIST = path.join(
 
 // ---- prompt.js patch ----
 const PROMPT_FILE = path.join(BOT_DIST, "bot/handlers/prompt.js");
-const PROMPT_SENTINEL = "// @@rolling-summary";
+const PROMPT_SENTINEL = "// @@telegram-addon-context-v2";
+const PROMPT_LEGACY_SENTINEL = "// @@rolling-summary: inject system context";
+const PROMPT_LEGACY_END_SENTINEL = "// @@end-rolling-summary";
 const PROMPT_ANCHOR = "promptOptions.variant = storedModel.variant;";
 const PROMPT_CLOSE_LINE = "        }\n";
 const PROMPT_INJECTION = `
-        // @@rolling-summary: inject system context
+        // @@telegram-addon-context-v2: inject addon system context once per compact segment
         try {
           const { readFile } = await import("fs/promises");
           const { join } = await import("path");
@@ -23,27 +25,70 @@ const PROMPT_INJECTION = `
           const appHome = join(homedir(), "Library/Application Support/opencode-telegram-bot");
           const statePath = join(appHome, "rolling-summary-state.json");
           const ltmPath = join(appHome, "long-term-memory.json");
-          const state = JSON.parse(await readFile(statePath, "utf-8"));
-          const entry = state[currentSession.id];
-          const parts = [promptOptions.system];
-          // long-term memory (cross-session, always injected)
+          const addonContextSentinel = "<opencode-telegram-addon-context-v1>";
+          let shouldInjectAddonContext = true;
+
           try {
-            const ltm = JSON.parse(await readFile(ltmPath, "utf-8"));
-            if (ltm.memories) parts.push(ltm.memories);
+            const { data: messagesData, error } = await opencodeClient.session.messages({
+              sessionID: currentSession.id,
+              directory: currentSession.directory,
+            });
+            if (!error && Array.isArray(messagesData)) {
+              const latestCompactionIndex = messagesData.reduce((latestIndex, message, index) => {
+                const messageParts = Array.isArray(message.parts) ? message.parts : [];
+                const isUserCompaction = message.info?.role === "user" && messageParts.some((part) => part?.type === "compaction");
+                return isUserCompaction ? index : latestIndex;
+              }, -1);
+              const segmentMessages = latestCompactionIndex >= 0
+                ? messagesData.slice(latestCompactionIndex + 1)
+                : messagesData;
+              shouldInjectAddonContext = !segmentMessages.some((message) => (
+                message.info?.role === "user" &&
+                typeof message.info?.system === "string" &&
+                message.info.system.includes(addonContextSentinel)
+              ));
+            }
           } catch (_) {}
-          // rolling summary (session-level)
-          if (entry && entry.summary && !entry.summaryDisabled) {
-            parts.push(entry.summary);
+
+          if (shouldInjectAddonContext) {
+            let state = {};
+            try { state = JSON.parse(await readFile(statePath, "utf-8")); } catch (_) {}
+            const entry = state[currentSession.id];
+            const systemParts = [promptOptions.system, addonContextSentinel];
+            // long-term memory (cross-session, injected once per compact segment)
+            try {
+              const ltm = JSON.parse(await readFile(ltmPath, "utf-8"));
+              if (ltm.memories) systemParts.push(ltm.memories);
+            } catch (_) {}
+            // rolling summary (session-level, injected once per compact segment)
+            if (entry && entry.summary && !entry.summaryDisabled) {
+              systemParts.push(entry.summary);
+            }
+            promptOptions.system = systemParts.filter(Boolean).join("\\n\\n");
           }
-          promptOptions.system = parts.filter(Boolean).join("\\n\\n");
         } catch (_) {}
-        // @@end-rolling-summary`;
+        // @@end-telegram-addon-context-v2`;
 
 function patchPromptFile() {
-  const content = fs.readFileSync(PROMPT_FILE, "utf-8");
+  let content = fs.readFileSync(PROMPT_FILE, "utf-8");
 
   if (content.includes(PROMPT_SENTINEL)) {
     console.log("[patch] prompt.js already patched, skipping");
+    return true;
+  }
+
+  const legacyIdx = content.indexOf(PROMPT_LEGACY_SENTINEL);
+  if (legacyIdx !== -1) {
+    const legacyEndIdx = content.indexOf(PROMPT_LEGACY_END_SENTINEL, legacyIdx);
+    if (legacyEndIdx === -1) {
+      console.error("[patch] Legacy prompt.js patch end not found");
+      return false;
+    }
+    const replaceEnd = content.indexOf("\n", legacyEndIdx);
+    const endIdx = replaceEnd === -1 ? legacyEndIdx + PROMPT_LEGACY_END_SENTINEL.length : replaceEnd;
+    const newContent = content.slice(0, legacyIdx) + PROMPT_INJECTION + content.slice(endIdx);
+    fs.writeFileSync(PROMPT_FILE, newContent, "utf-8");
+    console.log("[patch] prompt.js legacy patch upgraded successfully");
     return true;
   }
 
