@@ -7,6 +7,7 @@ This repository is the backup point for my local OpenCode setup.
 - OpenCode prompts and skills
 - Local OpenCode config files
 - Restore scripts for OpenCode, Telegram bot, and related launch agents
+- Telegram bot addon scripts and dist patcher under `bot-addons/`
 - Non-secret bootstrap files under `backups/`
 
 ## What is intentionally excluded
@@ -32,6 +33,35 @@ Those files can contain tokens, subscription data, or provider-specific secrets,
 - `opencode-telegram` now has a lightweight `/health` command and a periodic watchdog wrapper for local recovery and Bark alerts
 - The watchdog judges health from the latest bot start marker, so it will not treat stale startup failures as a fresh outage after a successful restart
 - Telegram API reachability is now treated as a soft signal; local proxy and OpenCode readiness are the hard gates for automatic recovery
+
+## Telegram bot addons
+
+The `bot-addons/` directory contains local patches for the installed `@grinev/opencode-telegram-bot` package.
+The patcher targets the installed dist files under:
+
+`~/.npm-global/lib/node_modules/@grinev/opencode-telegram-bot/dist`
+
+Current addon behavior:
+
+- Rolling summary state is stored in `~/Library/Application Support/opencode-telegram-bot/rolling-summary-state.json`
+- Long-term memory is stored in `~/Library/Application Support/opencode-telegram-bot/long-term-memory.json`
+- Telegram prompts inject long-term memory plus the active session rolling summary into `promptOptions.system` once per session segment
+- Long-term memory extraction avoids re-prepending old memory when the model already returned old plus new memory
+- The Reply Keyboard context button is labeled as `Compact`, for example `Compact 42K / 1.0M (4%)`
+- After OpenCode compaction, context display ignores token peaks before the latest user compaction marker and shows post-compact usage instead
+
+Important distinction:
+
+- Long-term memory and rolling summary preserve useful information for future prompts
+- OpenCode `Compact` reduces the active session history; it does not clear the session or replace it with only long-term memory
+- After a compact, the next Telegram prompt starts a new segment and refreshes addon system context once
+- For roleplay or other style-sensitive sessions, compact at scene boundaries rather than in the middle of high-context dialogue
+
+Operational notes:
+
+- Apply patches with `node "bot-addons/patches/apply.js"` from this repo, or with the synced addon copy in the Telegram bot app support directory
+- Restart the bot after patching: `launchctl kickstart -k gui/$(id -u)/com.uiye2048.opencode-telegram-bot`
+- Verify startup with `/tmp/opencode-telegram-bot.log`; a healthy post-compact reload should log the reduced `Loaded context from history` value
 
 ## Troubleshooting
 
