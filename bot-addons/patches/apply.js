@@ -148,6 +148,52 @@ function patchIndexFile() {
   return true;
 }
 
+// ---- keyboard.js patch ----
+const KEYBOARD_FILE = path.join(BOT_DIST, "bot/utils/keyboard.js");
+const KEYBOARD_SENTINEL = "function withCompactLabel";
+const KEYBOARD_HELPER_ANCHOR = "function formatContextForButton(contextInfo) {";
+const KEYBOARD_CONTEXT_RETURN = '    return t("keyboard.context", { used, limit, percent });';
+const KEYBOARD_CONTEXT_REPLACEMENT = '    return withCompactLabel(t("keyboard.context", { used, limit, percent }));';
+const KEYBOARD_EMPTY_RETURN = ': t("keyboard.context_empty");';
+const KEYBOARD_EMPTY_REPLACEMENT = ': withCompactLabel(t("keyboard.context_empty"));';
+const KEYBOARD_HELPER = `function withCompactLabel(text) {
+    return text.replace(/^📊\\s*/, "📊 Compact ");
+}
+`;
+
+function patchKeyboardFile() {
+  let content = fs.readFileSync(KEYBOARD_FILE, "utf-8");
+
+  if (content.includes(KEYBOARD_SENTINEL)) {
+    console.log("[patch] keyboard.js already patched, skipping");
+    return true;
+  }
+
+  const helperIdx = content.indexOf(KEYBOARD_HELPER_ANCHOR);
+  if (helperIdx === -1) {
+    console.error("[patch] Anchor not found in keyboard.js: " + KEYBOARD_HELPER_ANCHOR);
+    return false;
+  }
+
+  content = content.slice(0, helperIdx) + KEYBOARD_HELPER + content.slice(helperIdx);
+
+  if (!content.includes(KEYBOARD_CONTEXT_RETURN)) {
+    console.error("[patch] Context return not found in keyboard.js");
+    return false;
+  }
+  content = content.replace(KEYBOARD_CONTEXT_RETURN, KEYBOARD_CONTEXT_REPLACEMENT);
+
+  if (!content.includes(KEYBOARD_EMPTY_RETURN)) {
+    console.error("[patch] Empty context return not found in keyboard.js");
+    return false;
+  }
+  content = content.replace(KEYBOARD_EMPTY_RETURN, KEYBOARD_EMPTY_REPLACEMENT);
+
+  fs.writeFileSync(KEYBOARD_FILE, content, "utf-8");
+  console.log("[patch] keyboard.js patched successfully");
+  return true;
+}
+
 // ---- Main ----
 function main() {
   // Check bot package version
@@ -170,11 +216,16 @@ function main() {
     console.error("[patch] index.js not found at: " + INDEX_FILE);
     process.exit(1);
   }
+  if (!fs.existsSync(KEYBOARD_FILE)) {
+    console.error("[patch] keyboard.js not found at: " + KEYBOARD_FILE);
+    process.exit(1);
+  }
 
   const promptOk = patchPromptFile();
   const indexOk = patchIndexFile();
+  const keyboardOk = patchKeyboardFile();
 
-  if (promptOk && indexOk) {
+  if (promptOk && indexOk && keyboardOk) {
     console.log("[patch] All patches applied successfully");
     process.exit(0);
   } else {
