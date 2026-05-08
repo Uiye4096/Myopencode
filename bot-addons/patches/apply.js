@@ -194,6 +194,86 @@ function patchKeyboardFile() {
   return true;
 }
 
+// ---- pinned/manager.js patch ----
+const PINNED_MANAGER_FILE = path.join(BOT_DIST, "pinned/manager.js");
+const PINNED_CONTEXT_SENTINEL = "// @@compact-context-stat";
+const PINNED_CONTEXT_BLOCK_START = "            // Get the maximum context size and total cost from session history";
+const PINNED_CONTEXT_BLOCK_END = "            this.state.tokensUsed = maxContextSize;";
+const PINNED_CONTEXT_REPLACEMENT = [
+  "            // @@compact-context-stat: ignore pre-compaction context peaks",
+  "            // Context = input + cache.read (cache.read contains previously cached context)",
+  "            const latestCompactionIndex = messagesData.reduce((latestIndex, message, index) => {",
+  "                const parts = Array.isArray(message.parts) ? message.parts : [];",
+  "                const isUserCompaction = message.info?.role === \"user\" && parts.some((part) => part?.type === \"compaction\");",
+  "                return isUserCompaction ? index : latestIndex;",
+  "            }, -1);",
+  "            const contextMessages = latestCompactionIndex >= 0",
+  "                ? messagesData.slice(latestCompactionIndex + 1)",
+  "                : messagesData;",
+  "            let maxContextSize = 0;",
+  "            let totalCost = 0;",
+  "            logger.debug(`[PinnedManager] Processing ${messagesData.length} messages from history`);",
+  "            messagesData.forEach(({ info }) => {",
+  "                if (info.role !== \"assistant\") {",
+  "                    return;",
+  "                }",
+  "                const assistantInfo = info;",
+  "                if (assistantInfo.summary) {",
+  "                    logger.debug(`[PinnedManager] Skipping summary message`);",
+  "                    return;",
+  "                }",
+  "                totalCost += assistantInfo.cost || 0;",
+  "            });",
+  "            contextMessages.forEach(({ info }) => {",
+  "                if (info.role !== \"assistant\") {",
+  "                    return;",
+  "                }",
+  "                const assistantInfo = info;",
+  "                if (assistantInfo.summary) {",
+  "                    logger.debug(`[PinnedManager] Skipping summary message for context`);",
+  "                    return;",
+  "                }",
+  "                const input = assistantInfo.tokens?.input || 0;",
+  "                const cacheRead = assistantInfo.tokens?.cache?.read || 0;",
+  "                const contextSize = input + cacheRead;",
+  "                logger.debug(`[PinnedManager] Assistant message: input=${input}, cache.read=${cacheRead}, total=${contextSize}`);",
+  "                if (contextSize > maxContextSize) {",
+  "                    maxContextSize = contextSize;",
+  "                }",
+  "            });",
+  "            // @@end-compact-context-stat",
+  "",
+].join("\n");
+
+function patchPinnedManagerFile() {
+  const content = fs.readFileSync(PINNED_MANAGER_FILE, "utf-8");
+
+  if (content.includes(PINNED_CONTEXT_SENTINEL)) {
+    console.log("[patch] pinned/manager.js already patched, skipping");
+    return true;
+  }
+
+  const startIdx = content.indexOf(PINNED_CONTEXT_BLOCK_START);
+  if (startIdx === -1) {
+    console.error("[patch] Context block start not found in pinned/manager.js");
+    return false;
+  }
+
+  const endIdx = content.indexOf(PINNED_CONTEXT_BLOCK_END, startIdx);
+  if (endIdx === -1) {
+    console.error("[patch] Context block end not found in pinned/manager.js");
+    return false;
+  }
+
+  const newContent =
+    content.slice(0, startIdx) +
+    PINNED_CONTEXT_REPLACEMENT +
+    content.slice(endIdx);
+  fs.writeFileSync(PINNED_MANAGER_FILE, newContent, "utf-8");
+  console.log("[patch] pinned/manager.js patched successfully");
+  return true;
+}
+
 // ---- Main ----
 function main() {
   // Check bot package version
@@ -220,12 +300,17 @@ function main() {
     console.error("[patch] keyboard.js not found at: " + KEYBOARD_FILE);
     process.exit(1);
   }
+  if (!fs.existsSync(PINNED_MANAGER_FILE)) {
+    console.error("[patch] pinned/manager.js not found at: " + PINNED_MANAGER_FILE);
+    process.exit(1);
+  }
 
   const promptOk = patchPromptFile();
   const indexOk = patchIndexFile();
   const keyboardOk = patchKeyboardFile();
+  const pinnedManagerOk = patchPinnedManagerFile();
 
-  if (promptOk && indexOk && keyboardOk) {
+  if (promptOk && indexOk && keyboardOk && pinnedManagerOk) {
     console.log("[patch] All patches applied successfully");
     process.exit(0);
   } else {
