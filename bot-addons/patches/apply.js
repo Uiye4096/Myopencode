@@ -68,11 +68,134 @@ const PROMPT_INJECTION = `
           }
         } catch (_) {}
         // @@end-telegram-addon-context-v2`;
+const PROMPT_TIME_SENTINEL = "// @@telegram-time-context-v2";
+const PROMPT_TIME_END_SENTINEL = "// @@end-telegram-time-context-v2";
+const PROMPT_TIME_LEGACY_SENTINEL = "// @@telegram-time-context-v1";
+const PROMPT_TIME_LEGACY_END_SENTINEL = "// @@end-telegram-time-context-v1";
+const PROMPT_TIME_ANCHOR = "const promptErrorLogContext = {";
+const PROMPT_TIME_INJECTION = `
+        // @@telegram-time-context-v2: inject hidden message timing and proactive wakeup context on every prompt
+        try {
+          const { readFile } = await import("fs/promises");
+          const { join } = await import("path");
+          const { homedir } = await import("os");
+          const appHome = join(homedir(), "Library/Application Support/opencode-telegram-bot");
+          const wakeupStatePath = join(appHome, "proactive-wakeup-state.json");
+          const messageDate = ctx.message?.date ? new Date(ctx.message.date * 1000) : new Date();
+          const receivedAt = new Date();
+          const formatChengduDateTime = (date) => {
+            const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+              timeZone: "Asia/Shanghai",
+              year: "numeric",
+              month: "2-digit",
+              day: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+              hourCycle: "h23",
+            }).formatToParts(date).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+            return parts.year && parts.month && parts.day && parts.hour && parts.minute && parts.second
+              ? parts.year + "-" + parts.month + "-" + parts.day + " " + parts.hour + ":" + parts.minute + ":" + parts.second
+              : date.toISOString();
+          };
+          let wakeupState = {};
+          try { wakeupState = JSON.parse(await readFile(wakeupStatePath, "utf-8")); } catch (_) {}
+          const wakeupEntry = wakeupState[currentSession.id] || {};
+          const pendingWakeups = Array.isArray(wakeupEntry.pendingWakeups)
+            ? wakeupEntry.pendingWakeups
+                .filter((wakeup) => wakeup?.status === "pending")
+                .slice(-10)
+                .map((wakeup) => ({
+                  id: wakeup.id,
+                  wakeAt: wakeup.wakeAt,
+                  reason: wakeup.reason,
+                  instruction: wakeup.instruction,
+                }))
+            : [];
+          const recentProactiveMessages = Array.isArray(wakeupEntry.sentMessages)
+            ? wakeupEntry.sentMessages.slice(-5).map((message) => ({
+                wakeupId: message.wakeupId,
+                wakeAt: message.wakeAt,
+                text: message.text,
+              }))
+            : [];
+          const timeContext = [
+            "[telegram-time-context-v2]",
+            "user_location=Chengdu, China",
+            "user_timezone=Asia/Shanghai",
+            "message_sent_at_chengdu=" + formatChengduDateTime(messageDate),
+            "message_received_at_chengdu=" + formatChengduDateTime(receivedAt),
+            "message_sent_at=" + messageDate.toISOString(),
+            "message_received_at=" + receivedAt.toISOString(),
+            "message_delay_ms=" + Math.max(0, receivedAt.getTime() - messageDate.getTime()),
+            "",
+            "[proactive-wakeup-capability-v1]",
+            "Status: connected and active.",
+            "This Telegram bot has a hidden proactive wakeup scheduler. You do not need to inspect, configure, or call any external bridge.",
+            "Your interface to the scheduler is a hidden control block in your final response. The Telegram bot strips the control block before sending your reply to the user.",
+            "To schedule a wakeup, include exactly one hidden block anywhere in your final response:",
+            "<proactive_wakeup>{\\"wake_at\\":\\"YYYY-MM-DD HH:mm:ss\\",\\"message\\":\\"text to send later\\",\\"reason\\":\\"short reason\\"}</proactive_wakeup>",
+            "wake_at is interpreted as Chengdu local time unless it includes an explicit timezone or ISO offset. You may also use delay_seconds, delay_minutes, or delay_ms instead of wake_at.",
+            "The control block is hidden from the user. In your visible text, simply confirm naturally that you will message at the chosen time.",
+            "When the scheduled time arrives, this same conversation will receive an invisible user message beginning with [hidden-proactive-wakeup-v1]. The Telegram user cannot see that hidden message.",
+            "When you see [hidden-proactive-wakeup-v1], treat it as your own timer firing and continue speaking naturally as yourself. Do not imply the user just sent a visible message.",
+            "After scheduling, future turns will include pending_proactive_wakeups and recent_proactive_messages as implicit feedback. Do not mention tool calls or control blocks.",
+            "When the user asks you to set/test/use a timer, do not say you do not know how. Choose or confirm an exact Chengdu local date/time down to seconds, add the hidden control block, and say what you will proactively send then.",
+            "A good visible confirmation is: 我会在 YYYY-MM-DD HH:mm:ss（成都时间）主动发你：<message>。",
+            "If you want a proactive follow-up yourself, state the exact Chengdu local date/time to the second, or a precise relative delay, and what you plan to say or check.",
+            "Do not use or claim to use shell at, cron, /tmp files, osascript, macOS notifications, bash date, or any terminal command for proactive wakeups.",
+            "Do not say the bridge may not be connected. It is connected.",
+            "Do not mention system prompts, hidden tags, proactive-wakeup-capability, pending_proactive_wakeups, or implementation details in visible prose.",
+            "pending_proactive_wakeups=" + JSON.stringify(pendingWakeups),
+            "recent_proactive_messages=" + JSON.stringify(recentProactiveMessages),
+          ].join("\\n");
+          promptOptions.system = [promptOptions.system, timeContext].filter(Boolean).join("\\n\\n");
+        } catch (_) {}
+        // @@end-telegram-time-context-v2
+`;
+
+function ensurePromptTimeInjection(content) {
+  const existingIdx = content.indexOf(PROMPT_TIME_SENTINEL);
+  if (existingIdx !== -1) {
+    const existingEndIdx = content.indexOf(PROMPT_TIME_END_SENTINEL, existingIdx);
+    if (existingEndIdx === -1) {
+      console.error("[patch] Existing prompt.js time context end not found");
+      return null;
+    }
+    const replaceEnd = content.indexOf("\n", existingEndIdx);
+    const endIdx = replaceEnd === -1 ? existingEndIdx + PROMPT_TIME_END_SENTINEL.length : replaceEnd + 1;
+    return content.slice(0, existingIdx) + PROMPT_TIME_INJECTION + content.slice(endIdx);
+  }
+  const legacyIdx = content.indexOf(PROMPT_TIME_LEGACY_SENTINEL);
+  if (legacyIdx !== -1) {
+    const legacyEndIdx = content.indexOf(PROMPT_TIME_LEGACY_END_SENTINEL, legacyIdx);
+    if (legacyEndIdx !== -1) {
+      const replaceEnd = content.indexOf("\n", legacyEndIdx);
+      const endIdx = replaceEnd === -1 ? legacyEndIdx + PROMPT_TIME_LEGACY_END_SENTINEL.length : replaceEnd;
+      return content.slice(0, legacyIdx) + PROMPT_TIME_INJECTION + content.slice(endIdx);
+    }
+  }
+  const timeAnchorIdx = content.indexOf(PROMPT_TIME_ANCHOR);
+  if (timeAnchorIdx === -1) {
+    console.error("[patch] Time context anchor not found in prompt.js: " + PROMPT_TIME_ANCHOR);
+    return null;
+  }
+  return content.slice(0, timeAnchorIdx) + PROMPT_TIME_INJECTION + content.slice(timeAnchorIdx);
+}
 
 function patchPromptFile() {
   let content = fs.readFileSync(PROMPT_FILE, "utf-8");
 
   if (content.includes(PROMPT_SENTINEL)) {
+    const updatedContent = ensurePromptTimeInjection(content);
+    if (updatedContent === null) {
+      return false;
+    }
+    if (updatedContent !== content) {
+      fs.writeFileSync(PROMPT_FILE, updatedContent, "utf-8");
+      console.log("[patch] prompt.js time/proactive context upgraded successfully");
+      return true;
+    }
     console.log("[patch] prompt.js already patched, skipping");
     return true;
   }
@@ -86,7 +209,10 @@ function patchPromptFile() {
     }
     const replaceEnd = content.indexOf("\n", legacyEndIdx);
     const endIdx = replaceEnd === -1 ? legacyEndIdx + PROMPT_LEGACY_END_SENTINEL.length : replaceEnd;
-    const newContent = content.slice(0, legacyIdx) + PROMPT_INJECTION + content.slice(endIdx);
+    const newContent = ensurePromptTimeInjection(content.slice(0, legacyIdx) + PROMPT_INJECTION + content.slice(endIdx));
+    if (newContent === null) {
+      return false;
+    }
     fs.writeFileSync(PROMPT_FILE, newContent, "utf-8");
     console.log("[patch] prompt.js legacy patch upgraded successfully");
     return true;
@@ -111,7 +237,11 @@ function patchPromptFile() {
   }
   insertAt += 1; // AFTER the second closing brace
 
-  const newContent = content.slice(0, insertAt) + PROMPT_INJECTION + content.slice(insertAt);
+  let newContent = ensurePromptTimeInjection(content.slice(0, insertAt) + PROMPT_INJECTION + content.slice(insertAt));
+  if (newContent === null) {
+    return false;
+  }
+
   fs.writeFileSync(PROMPT_FILE, newContent, "utf-8");
   console.log("[patch] prompt.js patched successfully");
   return true;
@@ -119,6 +249,7 @@ function patchPromptFile() {
 
 // ---- bot/index.js patch ----
 const INDEX_FILE = path.join(BOT_DIST, "bot/index.js");
+const ASSISTANT_RUN_STATE_FILE = path.join(BOT_DIST, "bot/assistant-run-state.js");
 const INDEX_SENTINEL = "// @@rolling-summary";
 const INDEX_ANCHOR = "await pinnedMessageManager.onMessageComplete(tokens);";
 const INDEX_AFTER = "            }\n";
@@ -127,6 +258,72 @@ const ADDN_DIR = path.join(
   "Library/Application Support/opencode-telegram-bot/addons"
 );
 const CYCLE_RUNNER = path.join(ADDN_DIR, "rolling-summary/cycle-runner.js");
+const PROACTIVE_RUNTIME_IMPORT = 'import { proactiveWakeupRuntime } from "../proactive-wakeup/runtime.js";';
+const BOT_INDEX_CLIENT_TIMEOUT_SENTINEL = "timeoutSeconds: 45";
+const START_BOT_APP_FILE = path.join(BOT_DIST, "app/start-bot-app.js");
+const START_BOT_APP_SENTINEL = "proactiveWakeupRuntime";
+const START_BOT_APP_IMPORT = 'import { proactiveWakeupRuntime } from "../proactive-wakeup/runtime.js";';
+const START_BOT_WEBHOOK_OLD = `    const webhookInfo = await bot.api.getWebhookInfo();
+    if (webhookInfo.url) {
+        logger.info(\`[Bot] Webhook detected: \${webhookInfo.url}, removing...\`);
+        await bot.api.deleteWebhook();
+        logger.info("[Bot] Webhook removed, switching to long polling");
+    }`;
+const START_BOT_WEBHOOK_NEW = `    try {
+        const webhookInfo = await bot.api.getWebhookInfo();
+        if (webhookInfo.url) {
+            logger.info(\`[Bot] Webhook detected: \${webhookInfo.url}, removing...\`);
+            await bot.api.deleteWebhook();
+            logger.info("[Bot] Webhook removed, switching to long polling");
+        }
+    }
+    catch (error) {
+        logger.warn("[Bot] Could not check Telegram webhook before polling; continuing startup", error);
+    }`;
+const START_BOT_RETRY_CONST_OLD = "const SHUTDOWN_TIMEOUT_MS = 5000;";
+const START_BOT_RETRY_CONST_NEW = `const SHUTDOWN_TIMEOUT_MS = 5000;
+const TELEGRAM_START_RETRY_MS = 10000;`;
+const START_BOT_STOP_OLD = `        try {
+            bot.stop();
+        }
+        catch (error) {
+            logger.warn("[App] Failed to stop Telegram bot cleanly", error);
+        }`;
+const START_BOT_STOP_NEW = `        Promise.resolve(bot.stop()).catch((error) => {
+            logger.warn("[App] Failed to stop Telegram bot cleanly", error);
+        });`;
+const START_BOT_START_OLD = `    try {
+        await bot.start({
+            onStart: (botInfo) => {
+                logger.info(\`Bot @\${botInfo.username} started!\`);
+            },
+        });
+    }
+    finally {`;
+const START_BOT_START_NEW = `    try {
+        while (!shutdownStarted) {
+            try {
+                await bot.start({
+                    onStart: (botInfo) => {
+                        logger.info(\`Bot @\${botInfo.username} started!\`);
+                    },
+                });
+                if (!shutdownStarted) {
+                    logger.warn(\`[Bot] Telegram polling stopped unexpectedly; retrying in \${TELEGRAM_START_RETRY_MS}ms\`);
+                }
+            }
+            catch (error) {
+                if (shutdownStarted) {
+                    break;
+                }
+                logger.error(\`[Bot] Telegram polling failed; retrying in \${TELEGRAM_START_RETRY_MS}ms\`, error);
+            }
+            if (!shutdownStarted) {
+                await new Promise((resolve) => setTimeout(resolve, TELEGRAM_START_RETRY_MS));
+            }
+        }
+    }
+    finally {`;
 
 const INDEX_INJECTION = `
               // @@rolling-summary: round counter
@@ -151,6 +348,10 @@ const INDEX_INJECTION = `
                   const rounds = parseInt(process.env.ROLLING_SUMMARY_ROUNDS || "10", 10);
                   if (entry.roundCount > 0 && entry.roundCount % rounds === 0 && !entry.isSummarizing && !entry.summaryDisabled) {
                     logger.info(\`[Bot] Triggering summary cycle for \${sid} at round \${entry.roundCount}\`);
+                    entry.isSummarizing = true;
+                    state[sid] = entry;
+                    writeFileSync(stateTmp, JSON.stringify(state, null, 2), "utf-8");
+                    renameSync(stateTmp, statePath);
                     const addonDir = join(homedir(), "Library/Application Support/opencode-telegram-bot/addons");
                     const runnerPath = join(addonDir, "rolling-summary/cycle-runner.js");
                     const child = spawn(process.execPath, [runnerPath, sid], {
@@ -190,6 +391,317 @@ function patchIndexFile() {
   const newContent = content.slice(0, insertAt) + INDEX_INJECTION + content.slice(insertAt);
   fs.writeFileSync(INDEX_FILE, newContent, "utf-8");
   console.log("[patch] index.js patched successfully");
+  return true;
+}
+
+function patchBotIndexImports() {
+  let content = fs.readFileSync(INDEX_FILE, "utf-8");
+  if (content.includes(PROACTIVE_RUNTIME_IMPORT)) {
+    console.log("[patch] index.js proactive wakeup import already present, skipping");
+    return true;
+  }
+  const importAnchor = 'import { scheduledTaskRuntime } from "../scheduled-task/runtime.js";';
+  if (!content.includes(importAnchor)) {
+    console.error("[patch] Import anchor not found in index.js: " + importAnchor);
+    return false;
+  }
+  content = content.replace(importAnchor, `${importAnchor}\nimport { proactiveWakeupRuntime } from "../proactive-wakeup/runtime.js";`);
+  fs.writeFileSync(INDEX_FILE, content, "utf-8");
+  console.log("[patch] index.js proactive wakeup import patched successfully");
+  return true;
+}
+
+function patchBotIndexTelegramTimeout() {
+  let content = fs.readFileSync(INDEX_FILE, "utf-8");
+  if (content.includes(BOT_INDEX_CLIENT_TIMEOUT_SENTINEL)) {
+    console.log("[patch] index.js Telegram client timeout already patched, skipping");
+    return true;
+  }
+  const botOptionsNeedle = "    const botOptions = {};";
+  const botOptionsReplacement = `    const botOptions = {
+        client: {
+            timeoutSeconds: 45,
+        },
+    };`;
+  if (!content.includes(botOptionsNeedle)) {
+    console.error("[patch] Bot options anchor not found in index.js");
+    return false;
+  }
+  content = content.replace(botOptionsNeedle, botOptionsReplacement);
+  const proxyClientNeedle = "        botOptions.client = {\n            baseFetchConfig:";
+  const proxyClientReplacement = "        botOptions.client = {\n            timeoutSeconds: 45,\n            baseFetchConfig:";
+  if (!content.includes(proxyClientNeedle)) {
+    console.error("[patch] Proxy bot client anchor not found in index.js");
+    return false;
+  }
+  content = content.replace(proxyClientNeedle, proxyClientReplacement);
+  fs.writeFileSync(INDEX_FILE, content, "utf-8");
+  console.log("[patch] index.js Telegram client timeout patched successfully");
+  return true;
+}
+
+function patchBotIndexSessionIdle() {
+  let content = fs.readFileSync(INDEX_FILE, "utf-8");
+  if (content.includes("// @@proactive-wakeup: idle decision")) {
+    console.log("[patch] index.js proactive wakeup idle hook already present, skipping");
+    return true;
+  }
+  const needle = `        finally {
+            foregroundSessionState.markIdle(sessionId);
+            await scheduledTaskRuntime.flushDeferredDeliveries();
+        }
+    });`;
+  if (!content.includes(needle)) {
+    console.error("[patch] Idle finally block not found in index.js");
+    return false;
+  }
+  const injection = `
+            // @@proactive-wakeup: idle decision
+            try {
+                const currentSessionForWakeups = getCurrentSession();
+                if (currentSessionForWakeups && currentSessionForWakeups.id === sessionId) {
+                    void proactiveWakeupRuntime.queueSessionIdleDecision(sessionId, currentSessionForWakeups.directory, {
+                        agent: completedRun?.actualAgent || completedRun?.configuredAgent || null,
+                        model: completedRun?.actualProviderID && completedRun?.actualModelID
+                            ? {
+                                providerID: completedRun.actualProviderID,
+                                modelID: completedRun.actualModelID,
+                            }
+                            : (completedRun?.configuredProviderID && completedRun?.configuredModelID
+                                ? {
+                                    providerID: completedRun.configuredProviderID,
+                                    modelID: completedRun.configuredModelID,
+                                }
+                                : null),
+                        variant: completedRun?.actualVariant || completedRun?.configuredVariant || null,
+                        summary: completedRun?.messageText || null,
+                    });
+                }
+            } catch (_) {}
+            // @@end-proactive-wakeup
+`;
+  content = content.replace(needle, `${needle}${injection}`);
+  fs.writeFileSync(INDEX_FILE, content, "utf-8");
+  console.log("[patch] index.js proactive wakeup idle hook patched successfully");
+  return true;
+}
+
+function patchBotIndexWakeupControlBridge() {
+  let content = fs.readFileSync(INDEX_FILE, "utf-8");
+  let changed = false;
+
+  if (!content.includes("proactiveWakeupRuntime.stripAssistantWakeupControls(messageText, { hideIncomplete: true })")) {
+    const partialNeedle = "        const preparedStreamPayload = prepareStreamingPayload(messageText);";
+    const partialReplacement = [
+      "        const visibleMessageText = proactiveWakeupRuntime.stripAssistantWakeupControls(messageText, { hideIncomplete: true });",
+      "        const preparedStreamPayload = prepareStreamingPayload(visibleMessageText);",
+    ].join("\n");
+    if (!content.includes(partialNeedle)) {
+      console.error("[patch] Partial wakeup-control bridge anchor not found in index.js");
+      return false;
+    }
+    content = content.replace(partialNeedle, partialReplacement);
+    changed = true;
+  }
+
+  if (!content.includes("proactiveWakeupRuntime.consumeAssistantWakeupControls(sessionId, currentSession.directory, messageText, wakeupContext)")) {
+    const completeNeedle = `            try {
+                assistantRunState.markResponseCompleted(sessionId, {
+                    agent: completionInfo.agent,
+                    providerID: completionInfo.providerID,
+                    modelID: completionInfo.modelID,
+                });
+                await finalizeAssistantResponse({
+                    sessionId,
+                    messageId,
+                    messageText,`;
+    const completeReplacement = `            try {
+                const wakeupContext = {
+                    agent: completionInfo.agent,
+                    model: completionInfo.providerID && completionInfo.modelID
+                        ? {
+                            providerID: completionInfo.providerID,
+                            modelID: completionInfo.modelID,
+                        }
+                        : null,
+                    variant: completionInfo.variant || null,
+                };
+                const wakeupResult = await proactiveWakeupRuntime.consumeAssistantWakeupControls(sessionId, currentSession.directory, messageText, wakeupContext);
+                const visibleMessageText = wakeupResult.visibleText || proactiveWakeupRuntime.stripAssistantWakeupControls(messageText);
+                assistantRunState.markResponseCompleted(sessionId, {
+                    agent: completionInfo.agent,
+                    providerID: completionInfo.providerID,
+                    modelID: completionInfo.modelID,
+                    messageText: visibleMessageText,
+                    scheduledWakeupCount: wakeupResult.scheduled.length,
+                });
+                await finalizeAssistantResponse({
+                    sessionId,
+                    messageId,
+                    messageText: visibleMessageText,`;
+    if (!content.includes(completeNeedle)) {
+      console.error("[patch] Complete wakeup-control bridge anchor not found in index.js");
+      return false;
+    }
+    content = content.replace(completeNeedle, completeReplacement);
+    const ttsNeedle = "                    text: messageText,";
+    if (!content.includes(ttsNeedle)) {
+      console.error("[patch] TTS wakeup-control bridge anchor not found in index.js");
+      return false;
+    }
+    content = content.replace(ttsNeedle, "                    text: visibleMessageText,");
+    changed = true;
+  }
+
+  if (!content.includes("!completedRun?.scheduledWakeupCount")) {
+    const idleNeedle = "                if (currentSessionForWakeups && currentSessionForWakeups.id === sessionId) {";
+    const idleReplacement = "                if (currentSessionForWakeups && currentSessionForWakeups.id === sessionId && !completedRun?.scheduledWakeupCount) {";
+    if (!content.includes(idleNeedle)) {
+      console.error("[patch] Wakeup duplicate-skip anchor not found in index.js");
+      return false;
+    }
+    content = content.replace(idleNeedle, idleReplacement);
+    changed = true;
+  }
+
+  if (!content.includes("proactiveWakeupRuntime.flushDueWakeupsAfterIdle(sessionId);")) {
+    const flushNeedle = "            await scheduledTaskRuntime.flushDeferredDeliveries();";
+    if (!content.includes(flushNeedle)) {
+      console.error("[patch] Wakeup idle flush anchor not found in index.js");
+      return false;
+    }
+    content = content.replace(flushNeedle, `${flushNeedle}\n            proactiveWakeupRuntime.flushDueWakeupsAfterIdle(sessionId);`);
+    changed = true;
+  }
+
+  if (changed) {
+    fs.writeFileSync(INDEX_FILE, content, "utf-8");
+    console.log("[patch] index.js wakeup-control bridge patched successfully");
+  } else {
+    console.log("[patch] index.js wakeup-control bridge already present, skipping");
+  }
+  return true;
+}
+
+function patchAssistantRunStateFile() {
+  let content = fs.readFileSync(ASSISTANT_RUN_STATE_FILE, "utf-8");
+  if (content.includes('typeof info?.messageText === "string"')) {
+    console.log("[patch] assistant-run-state.js already patched, skipping");
+    return true;
+  }
+  const anchor = `        if (info?.modelID) {
+            run.actualModelID = info.modelID;
+        }`;
+  if (!content.includes(anchor)) {
+    console.error("[patch] Assistant run state anchor not found");
+    return false;
+  }
+  content = content.replace(anchor, `${anchor}
+        if (typeof info?.messageText === "string") {
+            run.messageText = info.messageText;
+        }
+        if (Number.isFinite(info?.scheduledWakeupCount)) {
+            run.scheduledWakeupCount = info.scheduledWakeupCount;
+        }`);
+  fs.writeFileSync(ASSISTANT_RUN_STATE_FILE, content, "utf-8");
+  console.log("[patch] assistant-run-state.js patched successfully");
+  return true;
+}
+
+function patchBotCleanupShutdown() {
+  let content = fs.readFileSync(INDEX_FILE, "utf-8");
+  if (content.includes("proactiveWakeupRuntime.shutdown();")) {
+    console.log("[patch] index.js proactive wakeup shutdown already present, skipping");
+    return true;
+  }
+  const anchor = "scheduledTaskRuntime.shutdown();";
+  if (!content.includes(anchor)) {
+    console.error("[patch] Shutdown anchor not found in index.js: " + anchor);
+    return false;
+  }
+  content = content.replace(anchor, `${anchor}\n    proactiveWakeupRuntime.shutdown();`);
+  fs.writeFileSync(INDEX_FILE, content, "utf-8");
+  console.log("[patch] index.js proactive wakeup shutdown patched successfully");
+  return true;
+}
+
+function patchStartBotAppFile() {
+  let content = fs.readFileSync(START_BOT_APP_FILE, "utf-8");
+  if (content.includes("// @@proactive-wakeup-startup-hook")) {
+    console.log("[patch] start-bot-app.js already patched, skipping");
+    return true;
+  }
+  const importAnchor = 'import { scheduledTaskRuntime } from "../scheduled-task/runtime.js";';
+  if (!content.includes(importAnchor)) {
+    console.error("[patch] Import anchor not found in start-bot-app.js: " + importAnchor);
+    return false;
+  }
+  if (!content.includes('import { proactiveWakeupRuntime } from "../proactive-wakeup/runtime.js";')) {
+    content = content.replace(importAnchor, `${importAnchor}\nimport { proactiveWakeupRuntime } from "../proactive-wakeup/runtime.js";`);
+  }
+  const initAnchor = "await scheduledTaskRuntime.initialize(bot);";
+  if (!content.includes(initAnchor)) {
+    console.error("[patch] Init anchor not found in start-bot-app.js: " + initAnchor);
+    return false;
+  }
+  if (!content.includes("await proactiveWakeupRuntime.initialize(bot.api, config.telegram.allowedUserId);")) {
+    content = content.replace(initAnchor, `${initAnchor}\n    await proactiveWakeupRuntime.initialize(bot.api, config.telegram.allowedUserId);`);
+  }
+  const shutdownAnchor = "scheduledTaskRuntime.shutdown();";
+  if (!content.includes(shutdownAnchor)) {
+    console.error("[patch] Shutdown anchor not found in start-bot-app.js: " + shutdownAnchor);
+    return false;
+  }
+  if (!content.includes("proactiveWakeupRuntime.shutdown();")) {
+    content = content.split(shutdownAnchor).join(`${shutdownAnchor}\n        proactiveWakeupRuntime.shutdown();`);
+  }
+  content = `// @@proactive-wakeup-startup-hook\n${content}`;
+  fs.writeFileSync(START_BOT_APP_FILE, content, "utf-8");
+  console.log("[patch] start-bot-app.js proactive wakeup patched successfully");
+  return true;
+}
+
+function patchStartBotAppWebhookPreflight() {
+  let content = fs.readFileSync(START_BOT_APP_FILE, "utf-8");
+  let changed = false;
+  if (!content.includes("Could not check Telegram webhook before polling; continuing startup")) {
+    if (!content.includes(START_BOT_WEBHOOK_OLD)) {
+      console.error("[patch] start-bot-app.js webhook preflight anchor not found");
+      return false;
+    }
+    content = content.replace(START_BOT_WEBHOOK_OLD, START_BOT_WEBHOOK_NEW);
+    changed = true;
+  }
+  if (!content.includes("TELEGRAM_START_RETRY_MS")) {
+    if (!content.includes(START_BOT_RETRY_CONST_OLD)) {
+      console.error("[patch] start-bot-app.js retry const anchor not found");
+      return false;
+    }
+    content = content.replace(START_BOT_RETRY_CONST_OLD, START_BOT_RETRY_CONST_NEW);
+    changed = true;
+  }
+  if (!content.includes("Promise.resolve(bot.stop()).catch")) {
+    if (!content.includes(START_BOT_STOP_OLD)) {
+      console.error("[patch] start-bot-app.js bot.stop anchor not found");
+      return false;
+    }
+    content = content.replace(START_BOT_STOP_OLD, START_BOT_STOP_NEW);
+    changed = true;
+  }
+  if (!content.includes("Telegram polling failed; retrying")) {
+    if (!content.includes(START_BOT_START_OLD)) {
+      console.error("[patch] start-bot-app.js bot.start anchor not found");
+      return false;
+    }
+    content = content.replace(START_BOT_START_OLD, START_BOT_START_NEW);
+    changed = true;
+  }
+  if (changed) {
+    fs.writeFileSync(START_BOT_APP_FILE, content, "utf-8");
+    console.log("[patch] start-bot-app.js Telegram startup resilience patched successfully");
+  } else {
+    console.log("[patch] start-bot-app.js Telegram startup resilience already patched, skipping");
+  }
   return true;
 }
 
@@ -341,6 +853,10 @@ function main() {
     console.error("[patch] index.js not found at: " + INDEX_FILE);
     process.exit(1);
   }
+  if (!fs.existsSync(ASSISTANT_RUN_STATE_FILE)) {
+    console.error("[patch] assistant-run-state.js not found at: " + ASSISTANT_RUN_STATE_FILE);
+    process.exit(1);
+  }
   if (!fs.existsSync(KEYBOARD_FILE)) {
     console.error("[patch] keyboard.js not found at: " + KEYBOARD_FILE);
     process.exit(1);
@@ -352,10 +868,18 @@ function main() {
 
   const promptOk = patchPromptFile();
   const indexOk = patchIndexFile();
+  const indexImportOk = patchBotIndexImports();
+  const indexTelegramTimeoutOk = patchBotIndexTelegramTimeout();
+  const indexIdleOk = patchBotIndexSessionIdle();
+  const indexWakeupControlOk = patchBotIndexWakeupControlBridge();
+  const indexShutdownOk = patchBotCleanupShutdown();
+  const assistantRunStateOk = patchAssistantRunStateFile();
+  const startBotAppOk = patchStartBotAppFile();
+  const startBotWebhookOk = patchStartBotAppWebhookPreflight();
   const keyboardOk = patchKeyboardFile();
   const pinnedManagerOk = patchPinnedManagerFile();
 
-  if (promptOk && indexOk && keyboardOk && pinnedManagerOk) {
+  if (promptOk && indexOk && indexImportOk && indexTelegramTimeoutOk && indexIdleOk && indexWakeupControlOk && indexShutdownOk && assistantRunStateOk && startBotAppOk && startBotWebhookOk && keyboardOk && pinnedManagerOk) {
     console.log("[patch] All patches applied successfully");
     process.exit(0);
   } else {

@@ -29,7 +29,9 @@ fi
 # ---- Copy addon modules into dist ----
 echo "Copying addon modules..."
 mkdir -p "$BOT_DIST/rolling-summary"
+mkdir -p "$BOT_DIST/proactive-wakeup"
 rsync -a "$ADDONS_DIR/rolling-summary/" "$BOT_DIST/rolling-summary/"
+rsync -a "$ADDONS_DIR/proactive-wakeup/" "$BOT_DIST/proactive-wakeup/"
 # Note: config.js is NOT copied to dist/ — it's only for addon-internal use (CJS).
 # The bot has its own config.js (ESM), which must NOT be overwritten.
 
