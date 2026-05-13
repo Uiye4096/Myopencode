@@ -94,16 +94,12 @@ probe_telegram() {
     printf '%s' "$response" | grep -q '"ok":true'
 }
 
-probe_dependencies() {
-    probe_proxy && probe_opencode
-}
-
 probe_telegram_soft() {
     if probe_telegram >/dev/null 2>&1; then
         return 0
     fi
 
-    log "telegram API probe failed; continuing because local proxy and OpenCode are up"
+    log "telegram API probe failed; treating as soft signal"
     return 1
 }
 
@@ -166,22 +162,37 @@ main() {
 
     log "watchdog run begin"
 
-    if ! probe_dependencies; then
-        log "dependency probe failed"
-        notify_bark \
-            "OpenCode Telegram 需要人工处理" \
-            "Telegram / proxy / OpenCode 连接探查失败，脚本没有自动重启。请先检查 ClashX Meta、7890/7891、4096 和 Telegram 连通性。"
-        exit 1
-    fi
-
-    probe_telegram_soft || true
-
     local pid
     pid="$(launchagent_pid || true)"
     if [ -n "$pid" ] && process_alive "$pid"; then
-        log "bot is alive and no recent failure was found; nothing to do"
-        exit 0
+        if bot_has_recent_failure; then
+            log "bot process is alive but recent critical failure was found; restarting"
+        else
+            log "bot is alive and no recent failure was found; nothing to do"
+            if ! probe_proxy; then
+                log "proxy probe failed while bot is alive; treating as soft signal"
+            fi
+            probe_telegram_soft || true
+            exit 0
+        fi
+    else
+        log "bot process is not alive"
     fi
+
+    if ! probe_opencode; then
+        log "opencode probe failed"
+        notify_bark \
+            "OpenCode Telegram 需要人工处理" \
+            "OpenCode 本地服务 4096 未就绪，脚本没有自动重启 bot。请先检查 com.uiye2048.opencode-serve 和 /tmp/opencode-serve.log。"
+        exit 1
+    fi
+
+    if probe_proxy; then
+        log "proxy probe ok"
+    else
+        log "proxy probe failed; continuing because proxy and Telegram checks are soft"
+    fi
+    probe_telegram_soft || true
 
     log "bot needs restart"
     ensure_watchdog_launchagent
@@ -196,7 +207,7 @@ main() {
     log "bot did not recover after restart"
     notify_bark \
         "OpenCode Telegram 重启失败" \
-        "连接探查通过，但 bot 重启后仍未恢复。请查看 /Users/uiye2048/Library/Application Support/opencode-telegram-bot/logs/ 和 /tmp/opencode-telegram-watchdog.log。"
+        "OpenCode 本地服务就绪，但 bot 重启后仍未恢复。请查看 /Users/uiye2048/Library/Application Support/opencode-telegram-bot/logs/ 和 /tmp/opencode-telegram-watchdog.log。"
     exit 1
 }
 
